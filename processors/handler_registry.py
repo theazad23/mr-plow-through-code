@@ -6,6 +6,7 @@ from processors.handlers.base_handler import BaseCodeHandler
 from processors.handlers.python_handler import PythonHandler
 from processors.handlers.javascript_handler import JavaScriptHandler
 from processors.handlers.java_handler import JavaHandler
+from processors.handlers.csharp_handler import CSharpHandler
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,19 @@ class CodeHandlerRegistry:
         self.register_handler('react', ReactHandler, ['.jsx', '.tsx'])
         self.register_handler('typescript', JavaScriptHandler, ['.ts'])
         self.register_handler('java', JavaHandler, ['.java'])
+        self.register_handler('csharp', CSharpHandler, [
+            '.cs',          # C# source files
+            '.cshtml',      # Razor views
+            '.razor',       # Blazor components
+            '.csx',         # C# scripts
+            '.vb',          # Visual Basic .NET
+            '.fs',          # F#
+            '.fsx',         # F# scripts
+            '.xaml',        # XAML files
+            '.aspx',        # ASP.NET Web Forms
+            '.ascx',        # ASP.NET User Controls
+            '.master'       # ASP.NET Master Pages
+        ])
         # self.register_handler('cpp', CppHandler, ['.cpp', '.cc', '.cxx', '.h', '.hpp'])
         # self.register_handler('ruby', RubyHandler, ['.rb', '.rake'])
         # self.register_handler('go', GoHandler, ['.go'])

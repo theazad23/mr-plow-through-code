@@ -10,6 +10,8 @@ from rich.progress import Progress
 from .handler_registry import CodeHandlerRegistry
 from config import ProcessorConfig
 from utils import calculate_file_hash, read_file_safely
+from parsers.dotnet_project_parser import DotNetProjectParser
+from parsers.msbuild_parser import MSBuildParser
 
 class ContentProcessor:
     """Processes source code files using language-specific handlers."""
@@ -21,6 +23,10 @@ class ContentProcessor:
         if config.verbose:
             self.logger.setLevel(logging.DEBUG)
         
+        # Initialize parsers
+        self.dotnet_parser = DotNetProjectParser()
+        self.msbuild_parser = MSBuildParser()
+
         # Get repository name from the target directory
         self.repo_name = self.config.target_dir.name
         
@@ -89,14 +95,22 @@ class ContentProcessor:
 
             self.logger.debug(f'Starting to process {file_path}')
             
-            # Get the appropriate handler
+            suffix = file_path.suffix.lower()
+            
+             # Handle different .NET file types
+            if suffix in {'.csproj', '.fsproj', '.vbproj'}:
+                return await self._process_dotnet_project(file_path)
+            elif suffix in {'.props', '.targets'}:
+                return await self._process_msbuild_file(file_path)
+            elif suffix == '.sln':
+                return await self._process_solution_file(file_path)
+
             handler = self.registry.get_handler_for_file(file_path)
             if not handler:
                 self.logger.warning(f'No handler found for {file_path}')
                 self.stats['skipped_files'] += 1
                 return None
 
-            # Read and process the file
             raw_size = file_path.stat().st_size
             self.stats['total_raw_size'] += raw_size
             
@@ -106,14 +120,13 @@ class ContentProcessor:
                 self.stats['skipped_files'] += 1
                 return None
 
-            # Clean and analyze the content
             try:
                 cleaned_content = handler.clean_content(content)
                 if not cleaned_content.strip():
                     self.logger.debug(f'Skipping {file_path}: empty after cleaning')
                     self.stats['skipped_files'] += 1
                     return None
-                    
+
                 analysis = handler.analyze_code(cleaned_content)
                 if not analysis.get('success', False):
                     error_msg = analysis.get('error', 'Unknown analysis error')
@@ -134,13 +147,10 @@ class ContentProcessor:
                 })
                 return None
 
-            # Update statistics
             file_type = file_path.suffix.lstrip('.')
             cleaned_size = len(cleaned_content.encode('utf-8'))
             self.stats['total_cleaned_size'] += cleaned_size
-            self.stats['file_types'][file_type] = (
-                self.stats['file_types'].get(file_type, 0) + 1
-            )
+            self.stats['file_types'][file_type] = self.stats['file_types'].get(file_type, 0) + 1
             self.stats['processed_files'] += 1
 
             return {
@@ -247,3 +257,161 @@ class ContentProcessor:
         except Exception as e:
             self.logger.error(f'Error saving results: {e}')
             raise
+        
+    async def _process_dotnet_project(self, file_path: Path) -> Optional[Dict]:
+        """Process .NET project files using DotNetProjectParser"""
+        try:
+            self.logger.debug(f'Processing .NET project file: {file_path}')
+            
+            # Parse the project file
+            project_info = self.dotnet_parser.parse_project_file(file_path)
+            
+            # Get associated MSBuild files
+            directory_build_props = file_path.parent / 'Directory.Build.props'
+            directory_build_targets = file_path.parent / 'Directory.Build.targets'
+            
+            # Add MSBuild information if available
+            if directory_build_props.exists():
+                project_info['directory_build_props'] = await self._process_msbuild_file(directory_build_props)
+            
+            if directory_build_targets.exists():
+                project_info['directory_build_targets'] = await self._process_msbuild_file(directory_build_targets)
+            
+            # Analyze project structure
+            source_files = []
+            test_files = []
+            for item in file_path.parent.rglob('*.cs'):
+                rel_path = str(item.relative_to(file_path.parent))
+                if any(pattern in rel_path.lower() for pattern in ['test', 'spec']):
+                    test_files.append(rel_path)
+                else:
+                    source_files.append(rel_path)
+
+            analysis = {
+                'success': True,
+                'project_info': project_info,
+                'structure': {
+                    'source_files': source_files,
+                    'test_files': test_files,
+                    'framework_targets': project_info.get('target_frameworks', []),
+                    'package_references': project_info.get('packages', []),
+                    'project_references': project_info.get('project_references', [])
+                },
+                'metrics': {
+                    'source_file_count': len(source_files),
+                    'test_file_count': len(test_files),
+                    'package_reference_count': len(project_info.get('packages', [])),
+                    'project_reference_count': len(project_info.get('project_references', []))
+                }
+            }
+
+            return {
+                'path': str(file_path.relative_to(self.config.target_dir)),
+                'type': 'dotnet-project',
+                'analysis': analysis,
+                'size': file_path.stat().st_size,
+                'content': project_info,
+                'hash': calculate_file_hash(file_path)
+            }
+
+        except Exception as e:
+            self.logger.error(f'Error processing .NET project file {file_path}: {e}')
+            return None
+
+    async def _process_msbuild_file(self, file_path: Path) -> Optional[Dict]:
+        """Process MSBuild files using MSBuildParser"""
+        try:
+            self.logger.debug(f'Processing MSBuild file: {file_path}')
+            
+            # Parse and analyze the MSBuild file
+            analysis = self.msbuild_parser.analyze_msbuild_file(file_path)
+            
+            if not analysis['success']:
+                self.logger.error(f'Failed to analyze MSBuild file {file_path}: {analysis.get("error")}')
+                return None
+
+            return {
+                'path': str(file_path.relative_to(self.config.target_dir)),
+                'type': 'msbuild',
+                'analysis': analysis,
+                'size': file_path.stat().st_size,
+                'content': analysis['content'],
+                'hash': calculate_file_hash(file_path)
+            }
+
+        except Exception as e:
+            self.logger.error(f'Error processing MSBuild file {file_path}: {e}')
+            return None
+
+    async def _process_solution_file(self, file_path: Path) -> Optional[Dict]:
+        """Process .NET solution files with enhanced project analysis"""
+        try:
+            self.logger.debug(f'Processing solution file: {file_path}')
+            content = read_file_safely(file_path, self.logger)
+            
+            if not content:
+                return None
+
+            # Parse solution file
+            projects = []
+            solution_folders = []
+            
+            project_pattern = r'Project\("{([^}]+)}"\)\s*=\s*"([^"]+)",\s*"([^"]+)",\s*"{([^}]+)}"'
+            
+            for match in re.finditer(project_pattern, content):
+                project_type_guid, project_name, project_path, project_guid = match.groups()
+                
+                # Convert relative path to absolute
+                project_file = (file_path.parent / project_path).resolve()
+                
+                if project_type_guid == '2150E333-8FDC-42A3-9474-1A3956D46DE8':
+                    # Solution folder
+                    solution_folders.append({
+                        'name': project_name,
+                        'guid': project_guid
+                    })
+                elif project_file.exists():
+                    # Actual project
+                    project_info = None
+                    if project_file.suffix.lower() in {'.csproj', '.fsproj', '.vbproj'}:
+                        project_analysis = await self._process_dotnet_project(project_file)
+                        if project_analysis:
+                            project_info = project_analysis.get('analysis', {}).get('project_info')
+                    
+                    projects.append({
+                        'name': project_name,
+                        'path': project_path,
+                        'guid': project_guid,
+                        'type': project_file.suffix.lower()[1:],
+                        'info': project_info
+                    })
+
+            analysis = {
+                'success': True,
+                'solution_info': {
+                    'projects': projects,
+                    'solution_folders': solution_folders,
+                    'metrics': {
+                        'total_projects': len(projects),
+                        'solution_folders': len(solution_folders),
+                        'project_types': {
+                            'csproj': sum(1 for p in projects if p['type'] == 'csproj'),
+                            'fsproj': sum(1 for p in projects if p['type'] == 'fsproj'),
+                            'vbproj': sum(1 for p in projects if p['type'] == 'vbproj')
+                        }
+                    }
+                }
+            }
+
+            return {
+                'path': str(file_path.relative_to(self.config.target_dir)),
+                'type': 'solution',
+                'analysis': analysis,
+                'size': file_path.stat().st_size,
+                'content': content,
+                'hash': calculate_file_hash(file_path)
+            }
+
+        except Exception as e:
+            self.logger.error(f'Error processing solution file {file_path}: {e}')
+            return None
