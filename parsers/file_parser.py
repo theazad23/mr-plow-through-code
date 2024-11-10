@@ -1,7 +1,6 @@
 from pathlib import Path
 from typing import Optional, Dict, Any
 import re
-
 from logging_config import setup_logger
 from .file_patterns_config import FilePatterns, default_patterns
 from utils import read_file_safely
@@ -10,7 +9,7 @@ from exceptions import FileProcessingError
 class FileParser:
     """Parser for handling file operations and content processing."""
 
-    def __init__(self, patterns: Optional[FilePatterns] = None):
+    def __init__(self, patterns: Optional[FilePatterns]=None):
         """
         Initialize the FileParser with optional custom patterns.
         
@@ -32,17 +31,21 @@ class FileParser:
         """
         try:
             if not self.should_process_file(file_path):
-                self.logger.debug(f"Skipping file: {file_path}")
+                self.logger.debug(f'Skipping file: {file_path}')
                 return None
 
             content = read_file_safely(file_path)
             if not content:
-                self.logger.warning(f"Could not read content from {file_path}")
+                self.logger.warning(f'Could not read content from {file_path}')
                 return None
+
+            # Clean docstrings if it's a Python file
+            if file_path.suffix.lower() == '.py':
+                content = self._clean_python_docstrings(content)
 
             category = self.patterns.get_category(file_path)
             is_test = self.patterns.is_test_file(file_path)
-
+            
             return {
                 'path': str(file_path),
                 'category': category,
@@ -52,10 +55,30 @@ class FileParser:
                 'extension': file_path.suffix.lower(),
                 'relative_path': str(file_path.relative_to(file_path.parent.parent))
             }
-
         except Exception as e:
-            self.logger.error(f"Error processing file {file_path}: {str(e)}")
-            raise FileProcessingError(f"Failed to process {file_path}: {str(e)}")
+            self.logger.error(f'Error processing file {file_path}: {str(e)}')
+            raise FileProcessingError(f'Failed to process {file_path}: {str(e)}')
+
+    def _clean_python_docstrings(self, content: str) -> str:
+        """Clean Python docstrings from content."""
+        try:
+            # Remove triple-quoted docstrings
+            content = re.sub(r'"""[\s\S]*?"""', '', content)
+            content = re.sub(r"'''[\s\S]*?'''", '', content)
+            
+            # Remove single-line comments
+            content = re.sub(r'#.*$', '', content, flags=re.MULTILINE)
+            
+            # Remove empty lines but preserve basic formatting
+            lines = []
+            for line in content.splitlines():
+                if line.strip():
+                    lines.append(line)
+            
+            return '\n'.join(lines)
+        except Exception as e:
+            self.logger.error(f'Error cleaning docstrings: {str(e)}')
+            return content
 
     def should_process_file(self, file_path: Path) -> bool:
         """
@@ -70,15 +93,11 @@ class FileParser:
         try:
             if not file_path.is_file():
                 return False
-
             if self.patterns.should_ignore(file_path):
                 return False
-
             if not self.patterns.is_supported_extension(file_path.suffix.lower()):
                 return False
-
             return True
-
         except Exception as e:
-            self.logger.error(f"Error checking file {file_path}: {str(e)}")
+            self.logger.error(f'Error checking file {file_path}: {str(e)}')
             return False

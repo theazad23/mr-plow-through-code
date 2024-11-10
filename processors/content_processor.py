@@ -23,13 +23,11 @@ class ContentProcessor:
         self.logger = logging.getLogger(__name__)
         
         # Initialize parsers with custom patterns if needed
-        custom_patterns = None
-        if config.excluded_patterns or config.included_extensions:
-            custom_patterns = FilePatterns.create_custom(
-                additional_ignore_patterns=config.excluded_patterns,
-                additional_categories={'custom': list(config.included_extensions)} if config.included_extensions else None
-            )
-        
+        custom_patterns = FilePatterns.create_with_gitignore(
+            target_dir=config.target_dir,
+            additional_ignore_patterns=config.excluded_patterns,
+            additional_categories={'custom': list(config.included_extensions)} if config.included_extensions else None
+        )
         self.file_parser = FileParser(patterns=custom_patterns)
         self.dotnet_parser = DotNetProjectParser()
         self.msbuild_parser = MSBuildParser()

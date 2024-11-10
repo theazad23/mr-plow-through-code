@@ -1,6 +1,7 @@
+from pathlib import Path
+from typing import Set
 import re
 from logging_config import setup_logger
-from pathlib import Path
 
 logger = setup_logger(__name__)
 
@@ -33,36 +34,80 @@ class GitignorePattern:
     def matches(self, path: str) -> bool:
         return bool(self.regex.match(path))
 
-class GitignoreParser:
-    def __init__(self, gitignore_path: Path):
-        self.patterns = []
-        self.negated_patterns = []
+class GitIgnoreParser:
+    """Parser for .gitignore files"""
+    
+    @staticmethod
+    def parse_gitignore(repo_root: Path) -> Set[str]:
+        """
+        Parse .gitignore file and return a set of patterns.
+        
+        Args:
+            repo_root: Root directory of the repository
+            
+        Returns:
+            Set of gitignore patterns converted to regex patterns
+        """
+        patterns = set()
+        gitignore_path = repo_root / '.gitignore'
         
         if not gitignore_path.exists():
-            logger.warning(f"No .gitignore found at {gitignore_path}")
-            return
+            logger.debug('No .gitignore file found')
+            return patterns
             
-        with open(gitignore_path, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#'):
-                    pattern = GitignorePattern(line)
-                    if pattern.is_negated:
-                        self.negated_patterns.append(pattern)
-                    else:
-                        self.patterns.append(pattern)
+        try:
+            with open(gitignore_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    # Skip empty lines and comments
+                    if not line or line.startswith('#'):
+                        continue
+                        
+                    # Convert gitignore pattern to regex pattern
+                    pattern = GitIgnoreParser._convert_to_regex(line)
+                    if pattern:
+                        patterns.add(pattern)
+                        
+            logger.debug(f'Parsed {len(patterns)} patterns from .gitignore')
+            return patterns
+            
+        except Exception as e:
+            logger.error(f'Error parsing .gitignore: {e}')
+            return set()
+    
+    @staticmethod
+    def _convert_to_regex(pattern: str) -> str:
+        """Convert a gitignore pattern to a regex pattern."""
+        try:
+            # Handle negation
+            if pattern.startswith('!'):
+                return ''  # Skip negation patterns for now
+                
+            # Remove leading and trailing slashes
+            pattern = pattern.strip('/')
+            
+            # Handle directory marker
+            is_dir = pattern.endswith('/')
+            if is_dir:
+                pattern = pattern[:-1]
+            
+            # Escape special regex characters
+            pattern = re.escape(pattern)
+            
+            # Convert gitignore globs to regex
+            pattern = pattern.replace('\\*\\*', '.*')  # ** to .*
+            pattern = pattern.replace('\\*', '[^/]*')  # * to [^/]*
+            pattern = pattern.replace('\\?', '[^/]')   # ? to [^/]
+            
+            # Add directory marker if needed
+            if is_dir:
+                pattern = pattern + '/'
+                
+            # Add start/end markers
+            return pattern + ('$' if not is_dir else '')
+            
+        except Exception as e:
+            logger.error(f'Error converting gitignore pattern {pattern}: {e}')
+            return ''
 
-    def is_ignored(self, path: str) -> bool:
-        path = path.replace('\\', '/')
-        if path.startswith('./'):
-            path = path[2:]
-            
-        for pattern in self.negated_patterns:
-            if pattern.matches(path):
-                return False
-                
-        for pattern in self.patterns:
-            if pattern.matches(path):
-                return True
-                
-        return False
+default_parser = GitIgnoreParser()

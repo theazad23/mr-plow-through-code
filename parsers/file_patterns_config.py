@@ -1,51 +1,83 @@
 from dataclasses import dataclass, field
-from typing import Set, Dict, List
+from typing import Set, Dict, List, Optional
 from pathlib import Path
 import re
 from logging_config import setup_logger
+from .gitignore_parser import GitIgnoreParser
 
 logger = setup_logger(__name__)
 
 @dataclass
 class FilePatterns:
     """Configuration for file patterns used in parsing and processing."""
-    
-    # Test-related patterns
+    target_dir: Optional[Path] = None
     test_patterns: Set[str] = field(default_factory=lambda: {
-        r'test_.*\.py$',           # Python test files
-        r'.*_test\.py$',           # Alternative Python test files
-        r'.*\.spec\.js$',          # JavaScript/TypeScript spec files
-        r'.*\.test\.js$',          # JavaScript test files
-        r'.*\.spec\.ts$',          # TypeScript spec files
-        r'.*\.test\.ts$',          # TypeScript test files
-        r'.*Test\.java$',          # Java test files
-        r'.*Tests?\.cs$',          # C# test files
-        r'.*Spec\.cs$',            # C# specification files
+        r'test_.*\.py$',
+        r'.*_test\.py$',
+        r'.*\.spec\.js$',
+        r'.*\.test\.js$',
+        r'.*\.spec\.ts$',
+        r'.*\.test\.ts$',
+        r'.*Test\.java$',
+        r'.*Tests?\.cs$',
+        r'.*Spec\.cs$'
     })
-
-    # Patterns for files to ignore
+    
     ignore_patterns: Set[str] = field(default_factory=lambda: {
-        r'\.git/',                 # Git directory
-        r'\.pytest_cache/',        # Pytest cache
-        r'__pycache__/',          # Python cache
-        r'node_modules/',          # Node.js modules
-        r'venv/',                  # Python virtual environment
-        r'\.venv/',               # Alternative virtual environment
-        r'\.idea/',               # JetBrains IDE files
-        r'\.vscode/',             # VSCode files
-        r'\.vs/',                 # Visual Studio files
-        r'bin/',                  # Binary files
-        r'obj/',                  # Object files
-        r'dist/',                 # Distribution files
-        r'build/',                # Build files
-        r'coverage/',             # Coverage reports
-        r'\.coverage$',           # Python coverage file
-        r'\.env$',                # Environment variables
-        r'\.DS_Store$',           # macOS files
-        r'Thumbs\.db$',           # Windows thumbnail cache
+        # Git and Version Control
+        r'\.git/',
+        r'\.gitignore$',
+        r'\.gitattributes$',
+        
+        # Python
+        r'__pycache__/',
+        r'\.pytest_cache/',
+        r'\.mypy_cache/',
+        r'\.coverage$',
+        r'\.coverage\.[0-9]+$',
+        r'\.coverage-\w+$',
+        r'\.pytest-cache/',
+        r'.*\.py[cod]$',
+        r'\.ruff_cache/',
+        
+        # Virtual Environments
+        r'venv/',
+        r'\.venv/',
+        r'env/',
+        r'\.env$',
+        
+        # IDE and Editor Files
+        r'\.idea/',
+        r'\.vscode/',
+        r'\.vs/',
+        r'\.sublime-workspace$',
+        r'\.sublime-project$',
+        
+        # Build and Distribution
+        r'build/',
+        r'dist/',
+        r'bin/',
+        r'obj/',
+        r'.*\.egg-info/',
+        r'coverage/',
+        
+        # System Files
+        r'\.DS_Store$',
+        r'Thumbs\.db$',
+        r'desktop\.ini$',
+        
+        # Node.js
+        r'node_modules/',
+        r'package-lock\.json$',
+        
+        # Temporary Files
+        r'.*~$',
+        r'.*\.swp$',
+        r'.*\.swo$',
+        r'.*\.bak$',
+        r'.*\.tmp$'
     })
 
-    # File categories by extension
     file_categories: Dict[str, List[str]] = field(default_factory=lambda: {
         'python': ['.py'],
         'javascript': ['.js', '.jsx'],
@@ -57,38 +89,50 @@ class FilePatterns:
         'config': ['.json', '.yaml', '.yml', '.toml', '.ini'],
         'documentation': ['.md', '.rst', '.txt'],
         'database': ['.sql', '.sqlite', '.db'],
-        'dotnet': ['.csproj', '.fsproj', '.vbproj', '.sln'],
+        'dotnet': ['.csproj', '.fsproj', '.vbproj', '.sln']
     })
 
     def __post_init__(self):
-        """Compile regex patterns for better performance."""
-        self.compiled_test_patterns = [re.compile(pattern) for pattern in self.test_patterns]
-        self.compiled_ignore_patterns = [re.compile(pattern) for pattern in self.ignore_patterns]
-        logger.debug(f"Initialized FilePatterns with {len(self.test_patterns)} test patterns and "
-                    f"{len(self.ignore_patterns)} ignore patterns")
+        """Initialize patterns and compile regexes."""
+        try:
+            if self.target_dir:
+                gitignore_patterns = GitIgnoreParser.parse_gitignore(self.target_dir)
+                self.ignore_patterns.update(gitignore_patterns)
+                logger.info(f'Added {len(gitignore_patterns)} patterns from .gitignore')
 
-    def is_test_file(self, file_path: Path) -> bool:
-        """
-        Check if a file is a test file based on configured patterns.
-        
-        Args:
-            file_path: Path to the file to check
+            self.compiled_test_patterns = []
+            self.compiled_ignore_patterns = []
+
+            # Safely compile test patterns
+            for pattern in self.test_patterns:
+                try:
+                    self.compiled_test_patterns.append(re.compile(pattern))
+                except re.error as e:
+                    logger.warning(f'Invalid test pattern {pattern}: {str(e)}')
+
+            # Safely compile ignore patterns
+            for pattern in self.ignore_patterns:
+                try:
+                    self.compiled_ignore_patterns.append(re.compile(pattern))
+                except re.error as e:
+                    logger.warning(f'Invalid ignore pattern {pattern}: {str(e)}')
+
+            logger.debug(f'Initialized FilePatterns with {len(self.compiled_test_patterns)} test patterns and {len(self.compiled_ignore_patterns)} ignore patterns')
+
+        except Exception as e:
+            logger.error(f'Error in FilePatterns initialization: {str(e)}')
+            self.compiled_test_patterns = []
+            self.compiled_ignore_patterns = []
             
-        Returns:
-            bool: True if the file matches any test pattern
-        """
-        str_path = str(file_path)
-        return any(pattern.search(str_path) for pattern in self.compiled_test_patterns)
-
     def should_ignore(self, file_path: Path) -> bool:
         """
-        Check if a file should be ignored based on configured patterns.
+        Check if a file should be ignored based on the patterns.
         
         Args:
-            file_path: Path to the file to check
+            file_path: Path to check
             
         Returns:
-            bool: True if the file matches any ignore pattern
+            bool: True if the file should be ignored
         """
         str_path = str(file_path)
         return any(pattern.search(str_path) for pattern in self.compiled_ignore_patterns)
@@ -98,7 +142,7 @@ class FilePatterns:
         Get the category of a file based on its extension.
         
         Args:
-            file_path: Path to the file
+            file_path: Path to the file to categorize
             
         Returns:
             str: Category name or 'other' if no category matches
@@ -109,47 +153,22 @@ class FilePatterns:
                 return category
         return 'other'
 
+    def is_test_file(self, file_path: Path) -> bool:
+        """Check if a file is a test file."""
+        str_path = str(file_path)
+        return any(pattern.search(str_path) for pattern in self.compiled_test_patterns)
+
     def is_supported_extension(self, extension: str) -> bool:
-        """
-        Check if a file extension is supported in any category.
-        
-        Args:
-            extension: File extension to check (including dot)
-            
-        Returns:
-            bool: True if the extension is supported
-        """
-        return any(extension in extensions for extensions in self.file_categories.values())
+        """Check if a file extension is supported."""
+        return any(extension in extensions for extensions in self.file_categories.values())     
 
     @classmethod
-    def create_custom(cls, 
-                     additional_test_patterns: Set[str] = None,
-                     additional_ignore_patterns: Set[str] = None,
-                     additional_categories: Dict[str, List[str]] = None) -> 'FilePatterns':
-        """
-        Create a FilePatterns instance with custom additional patterns.
+    def create_with_gitignore(cls, target_dir: Path, additional_ignore_patterns: Set[str] = None, additional_categories: Dict[str, List[str]] = None) -> 'FilePatterns':
+        """Create a FilePatterns instance that includes .gitignore patterns."""
+        instance = cls(target_dir=target_dir)
         
-        Args:
-            additional_test_patterns: Additional test file patterns to include
-            additional_ignore_patterns: Additional ignore patterns to include
-            additional_categories: Additional file categories to include
-            
-        Returns:
-            FilePatterns: New instance with combined patterns
-        """
-        instance = cls()
-        
-        if additional_test_patterns:
-            instance.test_patterns.update(additional_test_patterns)
-            instance.compiled_test_patterns.extend(
-                re.compile(pattern) for pattern in additional_test_patterns
-            )
-            
         if additional_ignore_patterns:
             instance.ignore_patterns.update(additional_ignore_patterns)
-            instance.compiled_ignore_patterns.extend(
-                re.compile(pattern) for pattern in additional_ignore_patterns
-            )
             
         if additional_categories:
             for category, extensions in additional_categories.items():
@@ -157,10 +176,8 @@ class FilePatterns:
                     instance.file_categories[category].extend(extensions)
                 else:
                     instance.file_categories[category] = extensions
-
-        logger.info(f"Created custom FilePatterns with {len(instance.test_patterns)} test patterns, "
-                   f"{len(instance.ignore_patterns)} ignore patterns, and "
-                   f"{len(instance.file_categories)} categories")
+                    
         return instance
 
+# Create default instance
 default_patterns = FilePatterns()

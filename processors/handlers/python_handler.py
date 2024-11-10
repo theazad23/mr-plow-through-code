@@ -2,104 +2,127 @@ import ast
 from typing import Dict, Any, List, Set
 from .base_handler import BaseCodeHandler, CodeMetrics
 from ..constants import AnalysisKeys as Keys
+import logging
 
 class PythonHandler(BaseCodeHandler):
     """Handler for Python source code analysis."""
-    
+
     def __init__(self):
         super().__init__()
         self.single_line_comment = '#'
-        self.multi_line_comment_start = '"""'
-        self.multi_line_comment_end = '"""'
-        
+        self.logger = logging.getLogger(__name__)
+
     def analyze_code(self, content: str) -> Dict[str, Any]:
+        """Analyze Python code content."""
         try:
-            tree = ast.parse(content)
+            cleaned_content = self.clean_content(content)
+            
+            # Basic metrics
             metrics = self.count_lines(content)
-            metrics.complexity = self._calculate_ast_complexity(tree)
-            metrics.max_depth = self._calculate_ast_depth(tree)
+            metrics.complexity = self._calculate_complexity(cleaned_content)
+            metrics.max_depth = self._calculate_depth(cleaned_content)
+            
+            # Extract basic elements
+            imports = []
+            functions = []
+            classes = []
+            
+            lines = cleaned_content.splitlines()
+            current_class = None
+            current_methods = []
+            
+            for line in lines:
+                stripped = line.strip()
+                
+                # Skip empty lines and comments
+                if not stripped or stripped.startswith('#'):
+                    continue
+                
+                # Import detection
+                if stripped.startswith('import '):
+                    name = stripped[7:].split()[0].split('.')[0]
+                    imports.append(name)
+                elif stripped.startswith('from '):
+                    parts = stripped.split()
+                    if len(parts) >= 2:
+                        name = parts[1].split('.')[0]
+                        imports.append(name)
+                
+                # Function detection
+                elif stripped.startswith('def '):
+                    name = stripped[4:].split('(')[0]
+                    is_async = 'async' in line[:line.find('def')]
+                    if current_class:
+                        current_methods.append({'name': name, 'is_async': is_async})
+                    else:
+                        functions.append({'name': name, 'is_async': is_async})
+                
+                # Class detection
+                elif stripped.startswith('class '):
+                    if current_class:
+                        classes.append({
+                            'name': current_class,
+                            'methods': current_methods,
+                            'bases': []
+                        })
+                    current_class = stripped[6:].split('(')[0].split(':')[0].strip()
+                    current_methods = []
+            
+            # Add last class if any
+            if current_class:
+                classes.append({
+                    'name': current_class,
+                    'methods': current_methods,
+                    'bases': []
+                })
             
             return {
                 Keys.SUCCESS: True,
                 Keys.METRICS: Keys.metrics_result(metrics),
-                Keys.IMPORTS: list(self._collect_imports(tree)),
-                Keys.FUNCTIONS: self._collect_functions(tree),
-                Keys.CLASSES: self._collect_classes(tree)
+                Keys.IMPORTS: sorted(list(set(imports))),
+                Keys.FUNCTIONS: functions,
+                Keys.CLASSES: classes
             }
         except Exception as e:
+            self.logger.error(f"Error analyzing Python code: {e}")
             return {Keys.SUCCESS: False, Keys.ERROR: str(e)}
-            
-    def _calculate_ast_complexity(self, node: ast.AST) -> int:
-        complexity = 0
-        for child in ast.walk(node):
-            if isinstance(child, (ast.If, ast.While, ast.For, ast.AsyncFor,
-                                ast.ExceptHandler, ast.With, ast.AsyncWith,
-                                ast.Assert, ast.Raise)):
-                complexity += 1
-            elif isinstance(child, ast.BoolOp):
-                complexity += len(child.values) - 1
-            elif isinstance(child, ast.IfExp):
-                complexity += 1
-        return max(1, complexity)
+
+    def _calculate_complexity(self, content: str) -> int:
+        """Calculate complexity based on control structures."""
+        complexity = 1
+        keywords = ['if', 'elif', 'for', 'while', 'except', 'with', 'assert']
+        lines = content.splitlines()
         
-    def _calculate_ast_depth(self, node: ast.AST, current: int = 0) -> int:
-        if isinstance(node, (ast.If, ast.For, ast.While, ast.With,
-                           ast.AsyncFor, ast.AsyncWith)):
-            current += 1
-        max_depth = current
-        for child in ast.iter_child_nodes(node):
-            child_depth = self._calculate_ast_depth(child, current)
-            max_depth = max(max_depth, child_depth)
+        for line in lines:
+            stripped = line.strip()
+            # Count control structures
+            for keyword in keywords:
+                if stripped.startswith(keyword + ' '):
+                    complexity += 1
+        
+        return complexity
+
+    def _calculate_depth(self, content: str) -> int:
+        """Calculate code nesting depth."""
+        max_depth = 0
+        current_depth = 0
+        lines = content.splitlines()
+        
+        for line in lines:
+            stripped = line.rstrip()
+            # Count leading spaces
+            indent = len(line) - len(line.lstrip())
+            depth = indent // 4  # Assuming 4-space indentation
+            current_depth = depth
+            max_depth = max(max_depth, current_depth)
+        
         return max_depth
-        
-    def _collect_imports(self, tree: ast.AST) -> Set[str]:
-        imports = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for name in node.names:
-                    imports.add(name.name.split('.')[0])
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imports.add(node.module.split('.')[0])
-        return imports
-        
-    def _collect_functions(self, tree: ast.AST) -> List[Dict[str, Any]]:
-        functions = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef):
-                functions.append(Keys.function_info(
-                    name=node.name,
-                    args=[arg.arg for arg in node.args.args],
-                    decorators=[ast.unparse(d) for d in node.decorator_list],
-                    is_async=isinstance(node, ast.AsyncFunctionDef)
-                ))
-        return functions
-        
-    def _collect_classes(self, tree: ast.AST) -> List[Dict[str, Any]]:
-        classes = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef):
-                methods = []
-                for child in node.body:
-                    if isinstance(child, ast.FunctionDef):
-                        methods.append(Keys.function_info(
-                            name=child.name,
-                            is_async=isinstance(child, ast.AsyncFunctionDef),
-                            decorators=[ast.unparse(d) for d in child.decorator_list]
-                        ))
-                classes.append(Keys.class_info(
-                    name=node.name,
-                    methods=methods,
-                    bases=[ast.unparse(base) for base in node.bases]
-                ))
-        return classes
-        
+
     def clean_content(self, content: str) -> str:
-        try:
-            tree = ast.parse(content)
-            return ast.unparse(tree)
-        except:
-            # Fallback to regex-based cleaning if AST parsing fails
-            content = re.sub('#.*$', '', content, flags=re.MULTILINE)
-            content = re.sub('"""[\s\S]*?"""', '', content)
-            content = re.sub("'''[\s\S]*?'''", '', content)
-            return '\n'.join(line for line in content.splitlines() if line.strip())
+        """Clean Python content by removing comments and empty lines."""
+        lines = []
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith('#'):
+                lines.append(line)
+        return '\n'.join(lines)
