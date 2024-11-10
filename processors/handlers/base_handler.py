@@ -31,40 +31,49 @@ class BaseCodeHandler(ABC):
         pass
         
     def count_lines(self, content: str) -> CodeMetrics:
-        """Count different types of lines in the code."""
-        lines = content.splitlines()
+        if content is None:
+            return CodeMetrics()
+            
         metrics = CodeMetrics()
+        lines = content.splitlines()
         metrics.lines_of_code = len(lines)
         metrics.blank_lines = sum(1 for line in lines if not line.strip())
         metrics.comment_lines = self._count_comment_lines(content)
         return metrics
     
     def _count_comment_lines(self, content: str) -> int:
-        """Count comment lines using language-specific comment markers."""
-        lines = content.splitlines()
-        comment_count = 0
-        in_multi_line = False
-        
-        for line in lines:
-            stripped = line.strip()
-            if not stripped:
-                continue
-                
-            if self.multi_line_comment_start in line:
-                in_multi_line = True
-                comment_count += 1
-                continue
-                
-            if in_multi_line:
-                comment_count += 1
-                if self.multi_line_comment_end in line:
-                    in_multi_line = False
-                continue
-                
-            if stripped.startswith(self.single_line_comment):
-                comment_count += 1
-                
-        return comment_count
+        if content is None or not any([self.single_line_comment, 
+                                     self.multi_line_comment_start, 
+                                     self.multi_line_comment_end]):
+            return 0
+            
+        try:
+            lines = content.splitlines()
+            comment_count = 0
+            in_multi_line = False
+            
+            for line in lines:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                    
+                if self.multi_line_comment_start and self.multi_line_comment_start in line:
+                    in_multi_line = True
+                    comment_count += 1
+                    continue
+                    
+                if in_multi_line:
+                    comment_count += 1
+                    if self.multi_line_comment_end and self.multi_line_comment_end in line:
+                        in_multi_line = False
+                    continue
+                    
+                if self.single_line_comment and stripped.startswith(self.single_line_comment):
+                    comment_count += 1
+                    
+            return comment_count
+        except Exception:
+            return 0
     
     def calculate_complexity(self, content: str) -> int:
         """Calculate cyclomatic complexity using a basic approach."""
