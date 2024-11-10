@@ -6,10 +6,11 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 import logging
 from rich.progress import Progress
-
 from .handler_registry import CodeHandlerRegistry
 from config import ProcessorConfig
 from utils import calculate_file_hash, read_file_safely
+from parsers.file_parser import FileParser
+from parsers.file_patterns_config import FilePatterns
 from parsers.dotnet_project_parser import DotNetProjectParser
 from parsers.msbuild_parser import MSBuildParser
 
@@ -20,26 +21,29 @@ class ContentProcessor:
         self.config = config
         self.registry = CodeHandlerRegistry()
         self.logger = logging.getLogger(__name__)
-        if config.verbose:
-            self.logger.setLevel(logging.DEBUG)
         
-        # Initialize parsers
+        # Initialize parsers with custom patterns if needed
+        custom_patterns = None
+        if config.excluded_patterns or config.included_extensions:
+            custom_patterns = FilePatterns.create_custom(
+                additional_ignore_patterns=config.excluded_patterns,
+                additional_categories={'custom': list(config.included_extensions)} if config.included_extensions else None
+            )
+        
+        self.file_parser = FileParser(patterns=custom_patterns)
         self.dotnet_parser = DotNetProjectParser()
         self.msbuild_parser = MSBuildParser()
-
-        # Get repository name from the target directory
-        self.repo_name = self.config.target_dir.name
         
-        # Set output directory to /output in the project root
+        if config.verbose:
+            self.logger.setLevel(logging.DEBUG)
+            
+        self.repo_name = self.config.target_dir.name
         self.output_dir = Path(__file__).parent.parent / 'output'
         self.output_dir.mkdir(exist_ok=True)
         
-        # Set default output file name using repo name
-        if not self.config.output_file:
-            self.config.output_file = str(self.output_dir / f'{self.repo_name}_code_context.{self.config.output_format}')
-        
-        if self.config.included_extensions is None:
-            self.config.included_extensions = self.registry.get_supported_extensions()
+        self.config.output_file = self.config.output_file or str(
+            self.output_dir / f'{self.repo_name}_code_context.{self.config.output_format}'
+        )
         
         self.stats = {
             'processed_files': 0,
@@ -52,31 +56,20 @@ class ContentProcessor:
             'file_types': {},
             'failed_files_info': []
         }
-    
+
     async def should_process_file(self, file_path: Path) -> bool:
         """Determine if a file should be processed."""
         try:
-            if not file_path.is_file():
-                self.logger.debug(f'Skipping {file_path}: not a file')
+            if not self.file_parser.should_process_file(file_path):
+                self.logger.debug(f'Skipping {file_path}: not processable')
                 return False
                 
-            size = file_path.stat().st_size
-            if size > self.config.max_file_size:
-                self.logger.debug(
-                    f'Skipping {file_path}: size {size} exceeds limit '
-                    f'{self.config.max_file_size}'
-                )
+            if not self.config.include_tests and self.file_parser.patterns.is_test_file(file_path):
+                self.logger.debug(f'Skipping {file_path}: test file')
                 return False
                 
-            if not self.registry.supports_extension(file_path.suffix):
-                self.logger.debug(
-                    f'Skipping {file_path}: extension {file_path.suffix} not supported'
-                )
-                return False
-                
-            rel_path = str(file_path.relative_to(self.config.target_dir))
-            if any(pattern in rel_path for pattern in self.config.excluded_patterns):
-                self.logger.debug(f'Skipping {file_path}: matches excluded pattern')
+            if file_path.stat().st_size > self.config.max_file_size:
+                self.logger.debug(f'Skipping {file_path}: exceeds size limit')
                 return False
                 
             self.logger.debug(f'Will process {file_path}')
@@ -95,60 +88,45 @@ class ContentProcessor:
 
             self.logger.debug(f'Starting to process {file_path}')
             
-            suffix = file_path.suffix.lower()
-            
-             # Handle different .NET file types
-            if suffix in {'.csproj', '.fsproj', '.vbproj'}:
-                return await self._process_dotnet_project(file_path)
-            elif suffix in {'.props', '.targets'}:
-                return await self._process_msbuild_file(file_path)
-            elif suffix == '.sln':
-                return await self._process_solution_file(file_path)
+            # Get file info from parser
+            file_info = self.file_parser.process_file(file_path)
+            if not file_info:
+                self.stats['skipped_files'] += 1
+                return None
 
+            # Get appropriate handler
             handler = self.registry.get_handler_for_file(file_path)
             if not handler:
                 self.logger.warning(f'No handler found for {file_path}')
                 self.stats['skipped_files'] += 1
                 return None
 
-            raw_size = file_path.stat().st_size
-            self.stats['total_raw_size'] += raw_size
-            
-            content = read_file_safely(file_path, self.logger)
-            if not content or not content.strip():
-                self.logger.debug(f'Skipping empty file: {file_path}')
+            # Process content
+            content = file_info['content']
+            cleaned_content = handler.clean_content(content)
+            if not cleaned_content.strip():
+                self.logger.debug(f'Skipping {file_path}: empty after cleaning')
                 self.stats['skipped_files'] += 1
                 return None
 
-            try:
-                cleaned_content = handler.clean_content(content)
-                if not cleaned_content.strip():
-                    self.logger.debug(f'Skipping {file_path}: empty after cleaning')
-                    self.stats['skipped_files'] += 1
-                    return None
-
-                analysis = handler.analyze_code(cleaned_content)
-                if not analysis.get('success', False):
-                    error_msg = analysis.get('error', 'Unknown analysis error')
-                    self.logger.error(f'Analysis failed for {file_path}: {error_msg}')
-                    self.stats['failed_files'] += 1
-                    self.stats['failed_files_info'].append({
-                        'file': str(file_path),
-                        'error': f'Analysis error: {error_msg}'
-                    })
-                    return None
-
-            except Exception as e:
-                self.logger.error(f'Failed to process {file_path}: {e}')
+            # Analyze code
+            analysis = handler.analyze_code(cleaned_content)
+            if not analysis.get('success', False):
+                error_msg = analysis.get('error', 'Unknown analysis error')
+                self.logger.error(f'Analysis failed for {file_path}: {error_msg}')
                 self.stats['failed_files'] += 1
                 self.stats['failed_files_info'].append({
                     'file': str(file_path),
-                    'error': str(e)
+                    'error': f'Analysis error: {error_msg}'
                 })
                 return None
 
+            # Update statistics
             file_type = file_path.suffix.lstrip('.')
+            raw_size = file_path.stat().st_size
             cleaned_size = len(cleaned_content.encode('utf-8'))
+            
+            self.stats['total_raw_size'] += raw_size
             self.stats['total_cleaned_size'] += cleaned_size
             self.stats['file_types'][file_type] = self.stats['file_types'].get(file_type, 0) + 1
             self.stats['processed_files'] += 1
@@ -159,7 +137,9 @@ class ContentProcessor:
                 'analysis': analysis,
                 'size': cleaned_size,
                 'content': cleaned_content,
-                'hash': calculate_file_hash(file_path)
+                'hash': calculate_file_hash(file_path),
+                'category': file_info['category'],
+                'is_test': file_info['is_test']
             }
 
         except Exception as e:
@@ -174,86 +154,57 @@ class ContentProcessor:
     async def process(self) -> dict:
         """Process all files in the target directory."""
         start_time = asyncio.get_event_loop().time()
-        
         try:
             self.logger.info(f'Starting processing of {self.config.target_dir}')
-            
-            # Get all files that should be processed
-            files = [
-                f for f in self.config.target_dir.rglob('*') 
-                if await self.should_process_file(f)
-            ]
+            files = [f for f in self.config.target_dir.rglob('*') if await self.should_process_file(f)]
             self.stats['total_files'] = len(files)
 
             results = []
             with Progress() as progress:
                 task = progress.add_task('[cyan]Processing files...', total=len(files))
-                
                 for file_path in files:
                     result = await self.process_file(file_path)
                     if result:
                         results.append(result)
                     progress.update(task, advance=1)
 
-            # Calculate processing time
-            end_time = asyncio.get_event_loop().time()
-            self.stats['processing_time'] = end_time - start_time
-
-            # Save results
+            self.stats['processing_time'] = asyncio.get_event_loop().time() - start_time
             await self.save_results(results)
 
-            # Log any failures
             if self.stats['failed_files'] > 0:
                 self.logger.error('\nFailed files details:')
                 for fail_info in self.stats['failed_files_info']:
-                    self.logger.error(f"\nFile: {fail_info['file']}")
-                    self.logger.error(f"Error: {fail_info['error']}")
+                    self.logger.error(f"\nFile: {fail_info['file']}\nError: {fail_info['error']}")
 
             return self.stats
 
         except Exception as e:
             self.logger.error(f'Error during processing: {e}')
             raise
-        
+
     async def save_results(self, results: List[Dict]) -> None:
         """Save processing results to file."""
         try:
-            # Ensure output file path is absolute
             output_path = Path(self.config.output_file)
             if not output_path.is_absolute():
                 output_path = self.output_dir / output_path
-
             self.logger.info(f'Saving results to {output_path}')
-            
-            # Create metadata
             metadata = {
                 'timestamp': datetime.now().isoformat(),
                 'repository_root': str(self.config.target_dir),
                 'total_files': len(results),
                 'statistics': self.stats
             }
-
-            # Ensure the directory exists
             output_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Save in appropriate format
             if self.config.output_format == 'jsonl':
                 with open(output_path, 'w', encoding='utf-8') as f:
-                    # Write metadata first
                     f.write(json.dumps(metadata) + '\n')
-                    # Write each result on a new line
                     for result in results:
                         f.write(json.dumps(result) + '\n')
-            else:  # json format
-                output = {
-                    'metadata': metadata,
-                    'files': results
-                }
+            else:
                 with open(output_path, 'w', encoding='utf-8') as f:
-                    json.dump(output, f, indent=2)
-
+                    json.dump({'metadata': metadata, 'files': results}, f, indent=2)
             self.logger.info(f'Results saved successfully to {output_path}')
-            
         except Exception as e:
             self.logger.error(f'Error saving results: {e}')
             raise

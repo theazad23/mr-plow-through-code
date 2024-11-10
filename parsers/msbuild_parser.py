@@ -1,13 +1,13 @@
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import xml.etree.ElementTree as ET
-import logging
+from logging_config import setup_logger
 
 class MSBuildParser:
     """Parser for MSBuild property and target files."""
 
     def __init__(self):
-        self.logger = logging.getLogger(__name__)
+        self.logger = setup_logger(__name__)
 
     def parse_msbuild_file(self, file_path: Path) -> Dict[str, any]:
         """Parse MSBuild files (.props and .targets)."""

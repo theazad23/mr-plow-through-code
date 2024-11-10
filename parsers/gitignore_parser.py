@@ -1,8 +1,8 @@
 import re
-import logging
+from logging_config import setup_logger
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__)
 
 class GitignorePattern:
     def __init__(self, pattern: str):

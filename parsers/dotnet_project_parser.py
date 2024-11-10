@@ -2,13 +2,13 @@ import xml.etree.ElementTree as ET
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 import re
-import logging
+from logging_config import setup_logger
 
 class DotNetProjectParser:
     """Parser for .NET project files (*.csproj, *.fsproj, *.vbproj)"""
 
     def __init__(self):
-        self.logger = logging.getLogger(__name__)
+        self.logger = setup_logger(__name__)
 
     def parse_project_file(self, file_path: Path) -> Dict[str, Any]:
         """Parse a .NET project file and extract relevant information."""

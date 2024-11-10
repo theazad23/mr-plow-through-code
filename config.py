@@ -1,6 +1,9 @@
 from dataclasses import dataclass
-from typing import Set, Dict, Optional, List
+from typing import Set, Optional
 from pathlib import Path
+from logging_config import setup_logger
+
+logger = setup_logger(__name__)
 
 @dataclass
 class ProcessorConfig:
@@ -18,19 +21,11 @@ class ProcessorConfig:
 
     def __post_init__(self):
         self.target_dir = Path(self.target_dir).resolve()
-        
-        # Setup default excluded patterns
+        logger.debug(f"Configured target directory: {self.target_dir}")
         if self.excluded_patterns is None:
-            self.excluded_patterns = {
-                'node_modules', '.git', 'venv', '__pycache__', 
-                'dist', 'build', '.env', '.pytest_cache',
-                'output'  # Exclude our output directory
-            }
-            
-        # Extensions will be populated by handler registry
+            self.excluded_patterns = {'node_modules', '.git', 'venv', '__pycache__', 'dist', 'build', '.env', '.pytest_cache', 'output'}
         if self.included_extensions is None:
             self.included_extensions = set()
-
-        # Ensure output file has correct extension
-        if self.output_file and not self.output_file.endswith(self.output_format):
-            self.output_file = f"{self.output_file}.{self.output_format}"
+        if self.output_file and (not self.output_file.endswith(self.output_format)):
+            self.output_file = f'{self.output_file}.{self.output_format}'
+        logger.debug(f"ProcessorConfig initialized: {self}")

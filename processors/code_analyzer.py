@@ -2,7 +2,7 @@ import ast
 import re
 from dataclasses import dataclass
 from typing import Dict, Any, List, Optional, Set
-import logging
+from logging_config import setup_logger
 from .constants import AnalysisKeys as Keys
 
 @dataclass
@@ -18,7 +18,7 @@ class CodeAnalyzer:
     """Analyzes source code files with language-specific handling."""
     
     def __init__(self):
-        self.logger = logging.getLogger(__name__)
+        self.logger = setup_logger(__name__)
 
     def _calculate_complexity(self, node: ast.AST) -> int:
         """Calculate cyclomatic complexity."""
