@@ -9,10 +9,9 @@ from rich.progress import Progress
 from .handler_registry import CodeHandlerRegistry
 from config import ProcessorConfig
 from utils import calculate_file_hash, read_file_safely
-from parsers.file_parser import FileParser
-from parsers.file_patterns_config import FilePatterns
+from parsers.file_parser import FileParser, FilePatterns
 from parsers.dotnet_project_parser import DotNetProjectParser
-from parsers.msbuild_parser import MSBuildParser
+from logging_config import setup_logger
 
 class ContentProcessor:
     """Processes source code files using language-specific handlers."""
@@ -20,17 +19,18 @@ class ContentProcessor:
     def __init__(self, config: ProcessorConfig):
         self.config = config
         self.registry = CodeHandlerRegistry()
-        self.logger = logging.getLogger(__name__)
+        self.logger = setup_logger(__name__)
         
-        # Initialize parsers with custom patterns if needed
+        # Initialize patterns with custom configuration
         custom_patterns = FilePatterns.create_with_gitignore(
             target_dir=config.target_dir,
             additional_ignore_patterns=config.excluded_patterns,
             additional_categories={'custom': list(config.included_extensions)} if config.included_extensions else None
         )
+        
+        # Initialize parsers
         self.file_parser = FileParser(patterns=custom_patterns)
         self.dotnet_parser = DotNetProjectParser()
-        self.msbuild_parser = MSBuildParser()
         
         if config.verbose:
             self.logger.setLevel(logging.DEBUG)
@@ -78,28 +78,30 @@ class ContentProcessor:
             return False
 
     async def process_file(self, file_path: Path) -> Optional[Dict]:
-        """Process a single file using appropriate language handler."""
+        """Process a single file."""
         try:
             if not await self.should_process_file(file_path):
                 self.stats['skipped_files'] += 1
                 return None
 
             self.logger.debug(f'Starting to process {file_path}')
-            
-            # Get file info from parser
+
+            # Handle .NET related files
+            if file_path.suffix.lower() in {'.csproj', '.fsproj', '.vbproj', '.props', '.targets', '.sln'}:
+                return await self._process_dotnet_file(file_path)
+
+            # Handle other files using existing file parser
             file_info = self.file_parser.process_file(file_path)
             if not file_info:
                 self.stats['skipped_files'] += 1
                 return None
 
-            # Get appropriate handler
             handler = self.registry.get_handler_for_file(file_path)
             if not handler:
                 self.logger.warning(f'No handler found for {file_path}')
                 self.stats['skipped_files'] += 1
                 return None
 
-            # Process content
             content = file_info['content']
             cleaned_content = handler.clean_content(content)
             if not cleaned_content.strip():
@@ -107,7 +109,6 @@ class ContentProcessor:
                 self.stats['skipped_files'] += 1
                 return None
 
-            # Analyze code
             analysis = handler.analyze_code(cleaned_content)
             if not analysis.get('success', False):
                 error_msg = analysis.get('error', 'Unknown analysis error')
@@ -119,7 +120,6 @@ class ContentProcessor:
                 })
                 return None
 
-            # Update statistics
             file_type = file_path.suffix.lstrip('.')
             raw_size = file_path.stat().st_size
             cleaned_size = len(cleaned_content.encode('utf-8'))
@@ -364,3 +364,48 @@ class ContentProcessor:
         except Exception as e:
             self.logger.error(f'Error processing solution file {file_path}: {e}')
             return None
+        
+    async def _process_dotnet_file(self, file_path: Path) -> Optional[Dict]:
+        """Process any .NET related file using the merged parser."""
+        try:
+            self.logger.debug(f'Processing .NET file: {file_path}')
+            
+            # Use merged parser to handle all .NET related files
+            parse_result = self.dotnet_parser.parse_file(file_path)
+            
+            if not parse_result.get('success', False):
+                error_msg = parse_result.get('error', 'Unknown parsing error')
+                self.logger.error(f'Failed to parse {file_path}: {error_msg}')
+                self.stats['failed_files'] += 1
+                self.stats['failed_files_info'].append({
+                    'file': str(file_path),
+                    'error': f'Parsing error: {error_msg}'
+                })
+                return None
+
+            # Determine file type based on suffix
+            file_type = 'dotnet-project'
+            if file_path.suffix.lower() == '.props':
+                file_type = 'msbuild-props'
+            elif file_path.suffix.lower() == '.targets':
+                file_type = 'msbuild-targets'
+            elif file_path.suffix.lower() == '.sln':
+                file_type = 'solution'
+
+            return {
+                'path': str(file_path.relative_to(self.config.target_dir)),
+                'type': file_type,
+                'analysis': parse_result,
+                'size': file_path.stat().st_size,
+                'content': parse_result,
+                'hash': calculate_file_hash(file_path)
+            }
+
+        except Exception as e:
+            self.logger.error(f'Error processing .NET file {file_path}: {e}')
+            self.stats['failed_files'] += 1
+            self.stats['failed_files_info'].append({
+                'file': str(file_path),
+                'error': f'Processing error: {str(e)}'
+            })
+            return None    

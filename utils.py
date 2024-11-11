@@ -7,51 +7,24 @@ from logging_config import setup_logger
 logger = setup_logger(__name__)
 
 def clean_python_docstrings(content: str) -> str:
-    """Clean Python docstrings and comments without using AST."""
     lines = content.splitlines()
     cleaned_lines = []
     in_docstring = False
     
-    i = 0
-    while i < len(lines):
-        line = lines[i]
+    for line in lines:
         stripped = line.strip()
-        
-        # Skip empty lines
         if not stripped:
-            i += 1
             continue
             
-        # Handle docstring starts
-        if ('"""' in line or "'''" in line) and not in_docstring:
-            quote_type = '"""' if '"""' in line else "'''"
-            # Check if it's a single-line docstring
-            if line.count(quote_type) == 2:
-                i += 1
+        if '"""' in line or "'''" in line:
+            if line.count('"""') == 2 or line.count("'''") == 2:
                 continue
-                
-            in_docstring = True
-            i += 1
-            
-            # Skip until we find the end of the docstring
-            while i < len(lines):
-                if quote_type in lines[i]:
-                    in_docstring = False
-                    i += 1
-                    break
-                i += 1
+            in_docstring = not in_docstring
             continue
             
-        # Skip comment lines
-        if stripped.startswith('#'):
-            i += 1
-            continue
-            
-        # Include non-docstring, non-comment lines
         if not in_docstring:
             cleaned_lines.append(line)
-        i += 1
-    
+            
     return '\n'.join(cleaned_lines)
 
 def get_file_encoding(file_path: Path) -> str:

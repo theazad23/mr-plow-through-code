@@ -1,7 +1,6 @@
 from typing import Dict, Type, Optional
 from pathlib import Path
 from logging_config import setup_logger
-from processors.handlers.react_handler import ReactHandler
 from processors.handlers.base_handler import BaseCodeHandler
 from processors.handlers.python_handler import PythonHandler
 from processors.handlers.javascript_handler import JavaScriptHandler
@@ -22,9 +21,8 @@ class CodeHandlerRegistry:
     def _initialize_handlers(self):
         """Initialize built-in handlers and their file extensions."""
         self.register_handler('python', PythonHandler, ['.py'])
-        self.register_handler('javascript', JavaScriptHandler, ['.js'])
-        self.register_handler('react', ReactHandler, ['.jsx', '.tsx'])
-        self.register_handler('typescript', JavaScriptHandler, ['.ts'])
+        self.register_handler('javascript', JavaScriptHandler, ['.js', '.jsx'])
+        self.register_handler('typescript', JavaScriptHandler, ['.ts', '.tsx'])
         self.register_handler('text', TextHandler, ['.txt', '.md', '.rst', '.log'])
         self.register_handler('java', JavaHandler, ['.java'])
         self.register_handler('csharp', CSharpHandler, [
