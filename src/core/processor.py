@@ -213,10 +213,8 @@ class CodeContextProcessor:
                 if not output_path.is_absolute():
                     output_path = self.default_output_dir / output_path
             else:
-                # Generate default filename with timestamp
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 repo_name = self.config.target_dir.name
-                output_filename = f"code_context_{repo_name}_{timestamp}.{self.config.output_format}"
+                output_filename = f"{repo_name}_code_context.{self.config.output_format}"
                 output_path = self.default_output_dir / output_filename
 
             # Ensure the output directory exists
